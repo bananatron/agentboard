@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	boardpkg "github.com/markx3/agentboard/internal/board"
@@ -199,6 +200,82 @@ func TestAPIDependencies(t *testing.T) {
 	delResp := doJSONRequest(t, srv, http.MethodDelete, "/tasks/"+taskA.ID+"/dependencies", body, projectID)
 	if delResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 remove dependency, got %d: %s", delResp.Code, delResp.Body.String())
+	}
+}
+
+func TestBoardViewHTML(t *testing.T) {
+	srv, projectID, cleanup := newTestServer(t)
+	defer cleanup()
+
+	createTask(t, srv, projectID, "Board Task")
+
+	req := httptest.NewRequest(http.MethodGet, "/board?project=default", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("expected html content type, got %q", ct)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<pre>") || !strings.Contains(body, "Board Task") {
+		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
+func TestBoardViewText(t *testing.T) {
+	srv, projectID, cleanup := newTestServer(t)
+	defer cleanup()
+
+	createTask(t, srv, projectID, "Plain Task")
+
+	req := httptest.NewRequest(http.MethodGet, "/board?project=default&format=text", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "text/plain") {
+		t.Fatalf("expected text/plain, got %q", ct)
+	}
+	if !strings.Contains(rr.Body.String(), "Plain Task") {
+		t.Fatalf("expected task in body, got %s", rr.Body.String())
+	}
+}
+
+func TestBoardViewRequiresProject(t *testing.T) {
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/board", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "project") {
+		t.Fatalf("expected instructions about project, got %s", rr.Body.String())
+	}
+}
+
+func TestNotFoundBearHTML(t *testing.T) {
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/no-such-path", nil)
+	req.Header.Set("Accept", "text/html")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "ʕノ•ᴥ•ʔノ◕") {
+		t.Fatalf("expected bear ascii, got %s", rr.Body.String())
 	}
 }
 

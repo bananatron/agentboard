@@ -46,6 +46,7 @@ All requests must include `X-API-Key`. Every non-project route also needs either
 - Task subroutes: `/claim`, `/unclaim`, `/agent-activity`, `/comments`, `/dependencies`, `/suggestions`
 - `GET/POST /suggestions`, `/suggestions/{id}/accept`, `/suggestions/{id}/dismiss`
 - `GET /status` — accepts `Accept: text/plain` or `?format=text` for a simple board view
+- `GET /board?project=<slug>` — public, read-only HTML/plaintext snapshot (no API key needed)
 
 Plaintext responses are supported for `/tasks` and `/status` to mirror the old TUI at a glance.
 
@@ -66,4 +67,4 @@ go test ./...
 
 ## Acknowledgements
 
-This project is a derivative of the original Agentboard created by Mark Xu ([@markx3](https://github.com/markx3)).
+This project is a derivative of the original Agentboard created by [@markx3](https://github.com/markx3).

@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -40,55 +42,58 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(s.apiKeyMiddleware)
 
-	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusNotFound, apiError{Error: "not_found"})
-	})
+	r.NotFound(s.handleNotFound)
 
-	r.Get("/status", s.handleStatus)
+	r.Get("/board", s.handleBoardView)
 
-	r.Route("/projects", func(r chi.Router) {
-		r.Get("/", s.handleListProjects)
-		r.Post("/", s.handleCreateProject)
+	r.Group(func(r chi.Router) {
+		r.Use(s.apiKeyMiddleware)
 
-		r.Route("/{projectRef}", func(r chi.Router) {
-			r.Get("/", s.handleGetProject)
-			r.Put("/", s.handleUpdateProject)
+		r.Get("/status", s.handleStatus)
+
+		r.Route("/projects", func(r chi.Router) {
+			r.Get("/", s.handleListProjects)
+			r.Post("/", s.handleCreateProject)
+
+			r.Route("/{projectRef}", func(r chi.Router) {
+				r.Get("/", s.handleGetProject)
+				r.Put("/", s.handleUpdateProject)
+			})
 		})
-	})
 
-	r.Route("/tasks", func(r chi.Router) {
-		r.Get("/", s.handleListTasks)
-		r.Post("/", s.handleCreateTask)
+		r.Route("/tasks", func(r chi.Router) {
+			r.Get("/", s.handleListTasks)
+			r.Post("/", s.handleCreateTask)
 
-		r.Route("/{taskID}", func(r chi.Router) {
-			r.Get("/", s.handleGetTask)
-			r.Patch("/", s.handleUpdateTask)
-			r.Delete("/", s.handleDeleteTask)
+			r.Route("/{taskID}", func(r chi.Router) {
+				r.Get("/", s.handleGetTask)
+				r.Patch("/", s.handleUpdateTask)
+				r.Delete("/", s.handleDeleteTask)
 
-			r.Post("/claim", s.handleClaimTask)
-			r.Post("/unclaim", s.handleUnclaimTask)
-			r.Post("/agent-activity", s.handleAgentActivity)
+				r.Post("/claim", s.handleClaimTask)
+				r.Post("/unclaim", s.handleUnclaimTask)
+				r.Post("/agent-activity", s.handleAgentActivity)
 
-			r.Get("/comments", s.handleListComments)
-			r.Post("/comments", s.handleAddComment)
+				r.Get("/comments", s.handleListComments)
+				r.Post("/comments", s.handleAddComment)
 
-			r.Get("/dependencies", s.handleListDependencies)
-			r.Post("/dependencies", s.handleAddDependency)
-			r.Delete("/dependencies", s.handleRemoveDependency)
+				r.Get("/dependencies", s.handleListDependencies)
+				r.Post("/dependencies", s.handleAddDependency)
+				r.Delete("/dependencies", s.handleRemoveDependency)
 
-			r.Post("/suggestions", s.handleCreateSuggestionForTask)
+				r.Post("/suggestions", s.handleCreateSuggestionForTask)
+			})
 		})
-	})
 
-	r.Route("/suggestions", func(r chi.Router) {
-		r.Get("/", s.handleListSuggestions)
-		r.Post("/", s.handleCreateSuggestion)
-		r.Route("/{suggestionID}", func(r chi.Router) {
-			r.Get("/", s.handleGetSuggestion)
-			r.Post("/accept", s.handleAcceptSuggestion)
-			r.Post("/dismiss", s.handleDismissSuggestion)
+		r.Route("/suggestions", func(r chi.Router) {
+			r.Get("/", s.handleListSuggestions)
+			r.Post("/", s.handleCreateSuggestion)
+			r.Route("/{suggestionID}", func(r chi.Router) {
+				r.Get("/", s.handleGetSuggestion)
+				r.Post("/accept", s.handleAcceptSuggestion)
+				r.Post("/dismiss", s.handleDismissSuggestion)
+			})
 		})
 	})
 
@@ -97,6 +102,10 @@ func (s *Server) routes() http.Handler {
 
 func (s *Server) apiKeyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/board") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		key := strings.TrimSpace(r.Header.Get("X-API-Key"))
 		if key == "" {
 			auth := r.Header.Get("Authorization")
@@ -172,6 +181,63 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, r, http.StatusOK, resp, func(w io.Writer) error {
 		return renderStatusText(w, project, tasks, resp)
 	})
+}
+
+func (s *Server) handleBoardView(w http.ResponseWriter, r *http.Request) {
+	slug := strings.TrimSpace(r.URL.Query().Get("project"))
+	if slug == "" {
+		s.writeBoardHelp(w, r)
+		return
+	}
+
+	ctx := r.Context()
+	project, err := s.svc.GetProjectBySlug(ctx, slug)
+	if err != nil {
+		s.writeBearNotFound(w, r)
+		return
+	}
+
+	tasks, err := s.svc.ListTasks(ctx, project.ID)
+	if err != nil {
+		http.Error(w, "board unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := renderTasksBoard(&buf, project, tasks); err != nil {
+		http.Error(w, "board unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	if wantsTextResponse(r) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write(buf.Bytes())
+		return
+	}
+
+	body := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>%s • agentboard</title>
+</head>
+<body style="font-family: SFMono-Regular,Consolas,monospace; white-space: pre-wrap;">
+<h1>Project: %s</h1>
+<pre>%s</pre>
+</body>
+</html>`,
+		html.EscapeString(project.Slug),
+		html.EscapeString(project.Slug),
+		html.EscapeString(buf.String()))
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, body)
+}
+
+func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
+	s.writeBearNotFound(w, r)
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -804,6 +870,42 @@ func wantsTextResponse(r *http.Request) bool {
 	}
 	accept := r.Header.Get("Accept")
 	return strings.Contains(strings.ToLower(accept), "text/plain")
+}
+
+func prefersHTML(r *http.Request) bool {
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return strings.Contains(accept, "text/html")
+}
+
+func (s *Server) writeBoardHelp(w http.ResponseWriter, r *http.Request) {
+	message := "To view a board, supply ?project=<slug>."
+	if prefersHTML(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "<!DOCTYPE html><html><body style=\"font-family:monospace;\">%s</body></html>", html.EscapeString(message))
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	fmt.Fprintln(w, message)
+}
+
+func (s *Server) writeBearNotFound(w http.ResponseWriter, r *http.Request) {
+	bear := "ʕノ•ᴥ•ʔノ◕"
+	message := fmt.Sprintf("%s 404 - nothing to see here.", bear)
+	if prefersHTML(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, "<!DOCTYPE html><html><body style=\"font-family:monospace; white-space: pre-wrap;\"><pre>%s</pre></body></html>", html.EscapeString(message))
+		return
+	}
+	if wantsTextResponse(r) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintln(w, message)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, apiError{Error: "not_found"})
 }
 
 func (s *Server) requireProject(w http.ResponseWriter, r *http.Request) (*db.Project, bool) {
