@@ -10,10 +10,11 @@ import (
 	"github.com/google/uuid"
 )
 
-func (d *DB) CreateSuggestion(ctx context.Context, taskID string, sugType SuggestionType, author, title, message string) (*Suggestion, error) {
+func (d *DB) CreateSuggestion(ctx context.Context, projectID, taskID string, sugType SuggestionType, author, title, message string) (*Suggestion, error) {
 	now := time.Now().UTC()
 	s := &Suggestion{
 		ID:        uuid.New().String(),
+		ProjectID: projectID,
 		TaskID:    taskID,
 		Type:      sugType,
 		Author:    author,
@@ -31,9 +32,9 @@ func (d *DB) CreateSuggestion(ctx context.Context, taskID string, sugType Sugges
 	}
 
 	_, err := d.conn.ExecContext(ctx,
-		`INSERT INTO suggestions (id, task_id, type, author, title, message, status, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, taskIDParam, s.Type, s.Author, s.Title, s.Message, s.Status,
+		`INSERT INTO suggestions (id, project_id, task_id, type, author, title, message, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.ProjectID, taskIDParam, s.Type, s.Author, s.Title, s.Message, s.Status,
 		s.CreatedAt.Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("creating suggestion: %w", err)
@@ -41,14 +42,14 @@ func (d *DB) CreateSuggestion(ctx context.Context, taskID string, sugType Sugges
 	return s, nil
 }
 
-func (d *DB) ListPendingSuggestions(ctx context.Context) ([]Suggestion, error) {
-	return d.listSuggestionsByStatus(ctx, SuggestionPending)
+func (d *DB) ListPendingSuggestions(ctx context.Context, projectID string) ([]Suggestion, error) {
+	return d.listSuggestionsByStatus(ctx, projectID, SuggestionPending)
 }
 
-func (d *DB) ListSuggestionsByTask(ctx context.Context, taskID string) ([]Suggestion, error) {
+func (d *DB) ListSuggestionsByTask(ctx context.Context, projectID, taskID string) ([]Suggestion, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT id, task_id, type, author, title, message, status, created_at
-		 FROM suggestions WHERE task_id=? ORDER BY created_at`, taskID)
+		`SELECT id, project_id, task_id, type, author, title, message, status, created_at
+		 FROM suggestions WHERE project_id=? AND task_id=? ORDER BY created_at`, projectID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("listing suggestions by task: %w", err)
 	}
@@ -56,19 +57,19 @@ func (d *DB) ListSuggestionsByTask(ctx context.Context, taskID string) ([]Sugges
 	return scanSuggestions(rows)
 }
 
-func (d *DB) ListSuggestions(ctx context.Context, status SuggestionStatus) ([]Suggestion, error) {
-	return d.listSuggestionsByStatus(ctx, status)
+func (d *DB) ListSuggestions(ctx context.Context, projectID string, status SuggestionStatus) ([]Suggestion, error) {
+	return d.listSuggestionsByStatus(ctx, projectID, status)
 }
 
-func (d *DB) GetSuggestion(ctx context.Context, id string) (*Suggestion, error) {
+func (d *DB) GetSuggestion(ctx context.Context, projectID, id string) (*Suggestion, error) {
 	row := d.conn.QueryRowContext(ctx,
-		`SELECT id, task_id, type, author, title, message, status, created_at
-		 FROM suggestions WHERE id=?`, id)
+		`SELECT id, project_id, task_id, type, author, title, message, status, created_at
+		 FROM suggestions WHERE id=? AND project_id=?`, id, projectID)
 
 	var s Suggestion
 	var createdAt string
 	var taskID sql.NullString
-	if err := row.Scan(&s.ID, &taskID, &s.Type, &s.Author, &s.Title, &s.Message, &s.Status, &createdAt); err != nil {
+	if err := row.Scan(&s.ID, &s.ProjectID, &taskID, &s.Type, &s.Author, &s.Title, &s.Message, &s.Status, &createdAt); err != nil {
 		return nil, fmt.Errorf("getting suggestion: %w", err)
 	}
 	s.TaskID = taskID.String
@@ -80,19 +81,19 @@ func (d *DB) GetSuggestion(ctx context.Context, id string) (*Suggestion, error) 
 	return &s, nil
 }
 
-func (d *DB) UpdateSuggestionStatus(ctx context.Context, id string, status SuggestionStatus) error {
+func (d *DB) UpdateSuggestionStatus(ctx context.Context, projectID, id string, status SuggestionStatus) error {
 	_, err := d.conn.ExecContext(ctx,
-		`UPDATE suggestions SET status=? WHERE id=?`, status, id)
+		`UPDATE suggestions SET status=? WHERE id=? AND project_id=?`, status, id, projectID)
 	if err != nil {
 		return fmt.Errorf("updating suggestion status: %w", err)
 	}
 	return nil
 }
 
-func (d *DB) listSuggestionsByStatus(ctx context.Context, status SuggestionStatus) ([]Suggestion, error) {
+func (d *DB) listSuggestionsByStatus(ctx context.Context, projectID string, status SuggestionStatus) ([]Suggestion, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT id, task_id, type, author, title, message, status, created_at
-		 FROM suggestions WHERE status=? ORDER BY created_at`, status)
+		`SELECT id, project_id, task_id, type, author, title, message, status, created_at
+		 FROM suggestions WHERE project_id=? AND status=? ORDER BY created_at`, projectID, status)
 	if err != nil {
 		return nil, fmt.Errorf("listing suggestions: %w", err)
 	}
@@ -100,13 +101,17 @@ func (d *DB) listSuggestionsByStatus(ctx context.Context, status SuggestionStatu
 	return scanSuggestions(rows)
 }
 
-func scanSuggestions(rows interface{ Next() bool; Scan(...interface{}) error; Err() error }) ([]Suggestion, error) {
+func scanSuggestions(rows interface {
+	Next() bool
+	Scan(...interface{}) error
+	Err() error
+}) ([]Suggestion, error) {
 	var suggestions []Suggestion
 	for rows.Next() {
 		var s Suggestion
 		var createdAt string
 		var taskID sql.NullString
-		if err := rows.Scan(&s.ID, &taskID, &s.Type, &s.Author, &s.Title, &s.Message, &s.Status, &createdAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.ProjectID, &taskID, &s.Type, &s.Author, &s.Title, &s.Message, &s.Status, &createdAt); err != nil {
 			return nil, fmt.Errorf("scanning suggestion: %w", err)
 		}
 		s.TaskID = taskID.String

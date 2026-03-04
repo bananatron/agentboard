@@ -51,6 +51,7 @@ func (s EnrichmentStatus) Valid() bool {
 
 type Task struct {
 	ID                  string           `json:"id"`
+	ProjectID           string           `json:"project_id"`
 	Title               string           `json:"title"`
 	Description         string           `json:"description"`
 	Status              TaskStatus       `json:"status"`
@@ -89,6 +90,7 @@ type TaskFieldUpdate struct {
 
 type Comment struct {
 	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
 	TaskID    string    `json:"task_id"`
 	Author    string    `json:"author"`
 	Body      string    `json:"body"`
@@ -129,6 +131,7 @@ func (s SuggestionStatus) Valid() bool {
 
 type Suggestion struct {
 	ID        string           `json:"id"`
+	ProjectID string           `json:"project_id"`
 	TaskID    string           `json:"task_id"`
 	Type      SuggestionType   `json:"type"`
 	Author    string           `json:"author"`
@@ -136,4 +139,12 @@ type Suggestion struct {
 	Message   string           `json:"message"`
 	Status    SuggestionStatus `json:"status"`
 	CreatedAt time.Time        `json:"created_at"`
+}
+
+type Project struct {
+	ID        string    `json:"id"`
+	Slug      string    `json:"slug"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

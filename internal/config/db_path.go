@@ -1,22 +1,20 @@
 package config
 
 import (
+	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
-const (
-	dbPathEnvVar    = "AGENTBOARD_DB_PATH"
-	defaultDBRelDir = ".agentboard"
-	defaultDBFile   = "board.db"
-)
+const dbPathEnvVar = "AGENTBOARD_DB_PATH"
 
-// DatabasePath returns the path to the SQLite database. If AGENTBOARD_DB_PATH
-// is set it takes precedence; otherwise it falls back to .agentboard/board.db.
-func DatabasePath() string {
-	if custom := strings.TrimSpace(os.Getenv(dbPathEnvVar)); custom != "" {
-		return custom
+// DatabasePath returns the SQLite path defined via AGENTBOARD_DB_PATH. Railway
+// deploys mount the /data volume as read/write storage, so the caller must set
+// AGENTBOARD_DB_PATH (for example /data/board.db) before starting the server.
+func DatabasePath() (string, error) {
+	path := strings.TrimSpace(os.Getenv(dbPathEnvVar))
+	if path == "" {
+		return "", fmt.Errorf("%s must be set", dbPathEnvVar)
 	}
-	return filepath.Join(defaultDBRelDir, defaultDBFile)
+	return path, nil
 }

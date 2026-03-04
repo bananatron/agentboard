@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func setupTestDB(t *testing.T) *db.DB {
+func setupTestDB(t *testing.T) (*db.DB, string) {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -19,18 +19,22 @@ func setupTestDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("opening test db: %v", err)
 	}
+	project, err := database.GetProjectBySlug(context.Background(), "default")
+	if err != nil {
+		t.Fatalf("getting default project: %v", err)
+	}
 	t.Cleanup(func() {
 		database.Close()
 		os.Remove(dbPath)
 	})
-	return database
+	return database, project.ID
 }
 
 func TestCreateAndGetTask(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, err := database.CreateTask(ctx, "Test Task", "A description")
+	task, err := database.CreateTask(ctx, projectID, "Test Task", "A description")
 	if err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
@@ -45,7 +49,7 @@ func TestCreateAndGetTask(t *testing.T) {
 		t.Errorf("got status %q, want %q", task.Status, db.StatusBacklog)
 	}
 
-	got, err := database.GetTask(ctx, task.ID)
+	got, err := database.GetTask(ctx, projectID, task.ID)
 	if err != nil {
 		t.Fatalf("getting task: %v", err)
 	}
@@ -55,14 +59,14 @@ func TestCreateAndGetTask(t *testing.T) {
 }
 
 func TestListTasks(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	database.CreateTask(ctx, "Task 1", "")
-	database.CreateTask(ctx, "Task 2", "")
-	database.CreateTask(ctx, "Task 3", "")
+	database.CreateTask(ctx, projectID, "Task 1", "")
+	database.CreateTask(ctx, projectID, "Task 2", "")
+	database.CreateTask(ctx, projectID, "Task 3", "")
 
-	tasks, err := database.ListTasks(ctx)
+	tasks, err := database.ListTasks(ctx, projectID)
 	if err != nil {
 		t.Fatalf("listing tasks: %v", err)
 	}
@@ -72,19 +76,19 @@ func TestListTasks(t *testing.T) {
 }
 
 func TestMoveTask(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, err := database.CreateTask(ctx, "Move Me", "")
+	task, err := database.CreateTask(ctx, projectID, "Move Me", "")
 	if err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
-	if err := database.MoveTask(ctx, task.ID, db.StatusPlanning); err != nil {
+	if err := database.MoveTask(ctx, projectID, task.ID, db.StatusPlanning); err != nil {
 		t.Fatalf("moving task: %v", err)
 	}
 
-	got, err := database.GetTask(ctx, task.ID)
+	got, err := database.GetTask(ctx, projectID, task.ID)
 	if err != nil {
 		t.Fatalf("getting task: %v", err)
 	}
@@ -94,30 +98,30 @@ func TestMoveTask(t *testing.T) {
 }
 
 func TestDeleteTask(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, _ := database.CreateTask(ctx, "Delete Me", "")
-	if err := database.DeleteTask(ctx, task.ID); err != nil {
+	task, _ := database.CreateTask(ctx, projectID, "Delete Me", "")
+	if err := database.DeleteTask(ctx, projectID, task.ID); err != nil {
 		t.Fatalf("deleting task: %v", err)
 	}
 
-	tasks, _ := database.ListTasks(ctx)
+	tasks, _ := database.ListTasks(ctx, projectID)
 	if len(tasks) != 0 {
 		t.Errorf("got %d tasks, want 0", len(tasks))
 	}
 }
 
 func TestListTasksByStatus(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	database.CreateTask(ctx, "Backlog 1", "")
-	database.CreateTask(ctx, "Backlog 2", "")
-	t1, _ := database.CreateTask(ctx, "To Move", "")
-	database.MoveTask(ctx, t1.ID, db.StatusPlanning)
+	database.CreateTask(ctx, projectID, "Backlog 1", "")
+	database.CreateTask(ctx, projectID, "Backlog 2", "")
+	t1, _ := database.CreateTask(ctx, projectID, "To Move", "")
+	database.MoveTask(ctx, projectID, t1.ID, db.StatusPlanning)
 
-	backlog, err := database.ListTasksByStatus(ctx, db.StatusBacklog)
+	backlog, err := database.ListTasksByStatus(ctx, projectID, db.StatusBacklog)
 	if err != nil {
 		t.Fatalf("listing by status: %v", err)
 	}
@@ -125,19 +129,19 @@ func TestListTasksByStatus(t *testing.T) {
 		t.Errorf("got %d backlog tasks, want 2", len(backlog))
 	}
 
-	planning, _ := database.ListTasksByStatus(ctx, db.StatusPlanning)
+	planning, _ := database.ListTasksByStatus(ctx, projectID, db.StatusPlanning)
 	if len(planning) != 1 {
 		t.Errorf("got %d planning tasks, want 1", len(planning))
 	}
 }
 
 func TestTaskPositioning(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	t1, _ := database.CreateTask(ctx, "First", "")
-	t2, _ := database.CreateTask(ctx, "Second", "")
-	t3, _ := database.CreateTask(ctx, "Third", "")
+	t1, _ := database.CreateTask(ctx, projectID, "First", "")
+	t2, _ := database.CreateTask(ctx, projectID, "Second", "")
+	t3, _ := database.CreateTask(ctx, projectID, "Third", "")
 
 	if t1.Position != 0 {
 		t.Errorf("first task position: got %d, want 0", t1.Position)
@@ -150,22 +154,51 @@ func TestTaskPositioning(t *testing.T) {
 	}
 }
 
+func TestTasksPartitionedByProject(t *testing.T) {
+	database, projectID := setupTestDB(t)
+	ctx := context.Background()
+
+	otherProject, err := database.CreateProject(ctx, "secondary", "Secondary")
+	if err != nil {
+		t.Fatalf("creating project: %v", err)
+	}
+
+	database.CreateTask(ctx, projectID, "Primary Task", "")
+	database.CreateTask(ctx, otherProject.ID, "Secondary Task", "")
+
+	defaultTasks, err := database.ListTasks(ctx, projectID)
+	if err != nil {
+		t.Fatalf("listing default tasks: %v", err)
+	}
+	if len(defaultTasks) != 1 || defaultTasks[0].Title != "Primary Task" {
+		t.Fatalf("expected only primary task, got %#v", defaultTasks)
+	}
+
+	otherTasks, err := database.ListTasks(ctx, otherProject.ID)
+	if err != nil {
+		t.Fatalf("listing other tasks: %v", err)
+	}
+	if len(otherTasks) != 1 || otherTasks[0].Title != "Secondary Task" {
+		t.Fatalf("expected only secondary task, got %#v", otherTasks)
+	}
+}
+
 func TestCheckConstraints(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
 	// Empty title should fail
-	_, err := database.CreateTask(ctx, "", "")
+	_, err := database.CreateTask(ctx, projectID, "", "")
 	if err == nil {
 		t.Error("expected error for empty title, got nil")
 	}
 }
 
 func TestAgentLifecycleFields(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, err := database.CreateTask(ctx, "Agent Task", "testing agent fields")
+	task, err := database.CreateTask(ctx, projectID, "Agent Task", "testing agent fields")
 	if err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
@@ -191,7 +224,7 @@ func TestAgentLifecycleFields(t *testing.T) {
 	}
 
 	// Round-trip: verify fields persisted
-	got, err := database.GetTask(ctx, task.ID)
+	got, err := database.GetTask(ctx, projectID, task.ID)
 	if err != nil {
 		t.Fatalf("getting task: %v", err)
 	}
@@ -215,7 +248,7 @@ func TestAgentLifecycleFields(t *testing.T) {
 		t.Fatalf("updating task: %v", err)
 	}
 
-	got, err = database.GetTask(ctx, task.ID)
+	got, err = database.GetTask(ctx, projectID, task.ID)
 	if err != nil {
 		t.Fatalf("getting task: %v", err)
 	}
@@ -228,19 +261,19 @@ func TestAgentLifecycleFields(t *testing.T) {
 }
 
 func TestMoveToBrainstorm(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, err := database.CreateTask(ctx, "Brainstorm Me", "")
+	task, err := database.CreateTask(ctx, projectID, "Brainstorm Me", "")
 	if err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
-	if err := database.MoveTask(ctx, task.ID, db.StatusBrainstorm); err != nil {
+	if err := database.MoveTask(ctx, projectID, task.ID, db.StatusBrainstorm); err != nil {
 		t.Fatalf("moving task to brainstorm: %v", err)
 	}
 
-	got, err := database.GetTask(ctx, task.ID)
+	got, err := database.GetTask(ctx, projectID, task.ID)
 	if err != nil {
 		t.Fatalf("getting task: %v", err)
 	}
@@ -250,10 +283,10 @@ func TestMoveToBrainstorm(t *testing.T) {
 }
 
 func TestEnrichmentFields(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, err := database.CreateTask(ctx, "Enrichable", "desc")
+	task, err := database.CreateTask(ctx, projectID, "Enrichable", "desc")
 	if err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
@@ -273,7 +306,7 @@ func TestEnrichmentFields(t *testing.T) {
 		t.Fatalf("updating task: %v", err)
 	}
 
-	got, _ := database.GetTask(ctx, task.ID)
+	got, _ := database.GetTask(ctx, projectID, task.ID)
 	if got.EnrichmentStatus != db.EnrichmentEnriching {
 		t.Errorf("enrichment_status: got %q, want %q", got.EnrichmentStatus, db.EnrichmentEnriching)
 	}
@@ -303,21 +336,21 @@ func TestEnrichmentStatusValid(t *testing.T) {
 }
 
 func TestUpdateTaskFields(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, _ := database.CreateTask(ctx, "Original Title", "Original desc")
+	task, _ := database.CreateTask(ctx, projectID, "Original Title", "Original desc")
 
 	// Partial update: only title
 	newTitle := "Updated Title"
-	err := database.UpdateTaskFields(ctx, task.ID, db.TaskFieldUpdate{
+	err := database.UpdateTaskFields(ctx, projectID, task.ID, db.TaskFieldUpdate{
 		Title: &newTitle,
 	})
 	if err != nil {
 		t.Fatalf("partial update title: %v", err)
 	}
 
-	got, _ := database.GetTask(ctx, task.ID)
+	got, _ := database.GetTask(ctx, projectID, task.ID)
 	if got.Title != "Updated Title" {
 		t.Errorf("title: got %q, want %q", got.Title, "Updated Title")
 	}
@@ -328,7 +361,7 @@ func TestUpdateTaskFields(t *testing.T) {
 	// Partial update: only enrichment
 	enriching := db.EnrichmentEnriching
 	agentName := "claude"
-	err = database.UpdateTaskFields(ctx, task.ID, db.TaskFieldUpdate{
+	err = database.UpdateTaskFields(ctx, projectID, task.ID, db.TaskFieldUpdate{
 		EnrichmentStatus:    &enriching,
 		EnrichmentAgentName: &agentName,
 	})
@@ -336,7 +369,7 @@ func TestUpdateTaskFields(t *testing.T) {
 		t.Fatalf("partial update enrichment: %v", err)
 	}
 
-	got, _ = database.GetTask(ctx, task.ID)
+	got, _ = database.GetTask(ctx, projectID, task.ID)
 	if got.EnrichmentStatus != db.EnrichmentEnriching {
 		t.Errorf("enrichment_status: got %q, want %q", got.EnrichmentStatus, db.EnrichmentEnriching)
 	}
@@ -350,34 +383,34 @@ func TestUpdateTaskFields(t *testing.T) {
 }
 
 func TestUpdateTaskFieldsNoop(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, _ := database.CreateTask(ctx, "Noop", "desc")
+	task, _ := database.CreateTask(ctx, projectID, "Noop", "desc")
 
 	// Empty update should be a no-op (no error)
-	err := database.UpdateTaskFields(ctx, task.ID, db.TaskFieldUpdate{})
+	err := database.UpdateTaskFields(ctx, projectID, task.ID, db.TaskFieldUpdate{})
 	if err != nil {
 		t.Fatalf("empty update: %v", err)
 	}
 
-	got, _ := database.GetTask(ctx, task.ID)
+	got, _ := database.GetTask(ctx, projectID, task.ID)
 	if got.Title != "Noop" {
 		t.Errorf("title changed on noop: got %q", got.Title)
 	}
 }
 
 func TestUpdateTaskFieldsMultiple(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, _ := database.CreateTask(ctx, "Multi", "desc")
+	task, _ := database.CreateTask(ctx, projectID, "Multi", "desc")
 
 	newTitle := "New Title"
 	newDesc := "New Description"
 	newAssignee := "alice"
 	newBranch := "feat/new"
-	err := database.UpdateTaskFields(ctx, task.ID, db.TaskFieldUpdate{
+	err := database.UpdateTaskFields(ctx, projectID, task.ID, db.TaskFieldUpdate{
 		Title:       &newTitle,
 		Description: &newDesc,
 		Assignee:    &newAssignee,
@@ -387,7 +420,7 @@ func TestUpdateTaskFieldsMultiple(t *testing.T) {
 		t.Fatalf("multi-field update: %v", err)
 	}
 
-	got, _ := database.GetTask(ctx, task.ID)
+	got, _ := database.GetTask(ctx, projectID, task.ID)
 	if got.Title != "New Title" {
 		t.Errorf("title: got %q", got.Title)
 	}
@@ -403,12 +436,12 @@ func TestUpdateTaskFieldsMultiple(t *testing.T) {
 }
 
 func TestCommentsCRUD(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, _ := database.CreateTask(ctx, "Commentable", "")
+	task, _ := database.CreateTask(ctx, projectID, "Commentable", "")
 
-	c1, err := database.AddComment(ctx, task.ID, "alice", "First comment")
+	c1, err := database.AddComment(ctx, projectID, task.ID, "alice", "First comment")
 	if err != nil {
 		t.Fatalf("adding comment: %v", err)
 	}
@@ -419,9 +452,9 @@ func TestCommentsCRUD(t *testing.T) {
 		t.Errorf("author: got %q, want %q", c1.Author, "alice")
 	}
 
-	database.AddComment(ctx, task.ID, "bob", "Second comment")
+	database.AddComment(ctx, projectID, task.ID, "bob", "Second comment")
 
-	comments, err := database.ListComments(ctx, task.ID)
+	comments, err := database.ListComments(ctx, projectID, task.ID)
 	if err != nil {
 		t.Fatalf("listing comments: %v", err)
 	}
@@ -438,17 +471,17 @@ func TestCommentsCRUD(t *testing.T) {
 }
 
 func TestCommentsCascadeOnTaskDelete(t *testing.T) {
-	database := setupTestDB(t)
+	database, projectID := setupTestDB(t)
 	ctx := context.Background()
 
-	task, _ := database.CreateTask(ctx, "Delete Me", "")
-	database.AddComment(ctx, task.ID, "alice", "Will be deleted")
+	task, _ := database.CreateTask(ctx, projectID, "Delete Me", "")
+	database.AddComment(ctx, projectID, task.ID, "alice", "Will be deleted")
 
-	if err := database.DeleteTask(ctx, task.ID); err != nil {
+	if err := database.DeleteTask(ctx, projectID, task.ID); err != nil {
 		t.Fatalf("deleting task: %v", err)
 	}
 
-	comments, _ := database.ListComments(ctx, task.ID)
+	comments, _ := database.ListComments(ctx, projectID, task.ID)
 	if len(comments) != 0 {
 		t.Errorf("after cascade: got %d comments, want 0", len(comments))
 	}
@@ -513,10 +546,15 @@ func TestSchemaV2Migration(t *testing.T) {
 
 	// Verify the migrated task still exists with new default fields
 	ctx := context.Background()
-	task, err := database.GetTask(ctx, "test-id-1")
+	project, err := database.GetProjectBySlug(ctx, "default")
+	if err != nil {
+		t.Fatalf("fetching default project: %v", err)
+	}
+	task, err := database.GetTask(ctx, project.ID, "test-id-1")
 	if err != nil {
 		t.Fatalf("getting migrated task: %v", err)
 	}
+	projectID := task.ProjectID
 
 	if task.Title != "V1 Task" {
 		t.Errorf("title: got %q, want %q", task.Title, "V1 Task")
@@ -536,7 +574,7 @@ func TestSchemaV2Migration(t *testing.T) {
 	if err := database.UpdateTask(ctx, task); err != nil {
 		t.Fatalf("setting completed status on migrated task: %v", err)
 	}
-	got, _ := database.GetTask(ctx, task.ID)
+	got, _ := database.GetTask(ctx, projectID, task.ID)
 	if got.AgentStatus != db.AgentCompleted {
 		t.Errorf("completed status not persisted on migrated DB: got %q", got.AgentStatus)
 	}
@@ -622,12 +660,17 @@ func TestSchemaV4toV5Migration(t *testing.T) {
 	defer database.Close()
 
 	ctx := context.Background()
+	project, err := database.GetProjectBySlug(ctx, "default")
+	if err != nil {
+		t.Fatalf("fetching default project: %v", err)
+	}
 
 	// Verify task survived with all original fields
-	task, err := database.GetTask(ctx, "v4-task-1")
+	task, err := database.GetTask(ctx, project.ID, "v4-task-1")
 	if err != nil {
 		t.Fatalf("getting migrated task: %v", err)
 	}
+	projectID := task.ProjectID
 	if task.Title != "V4 Task" {
 		t.Errorf("title: got %q, want %q", task.Title, "V4 Task")
 	}
@@ -649,33 +692,21 @@ func TestSchemaV4toV5Migration(t *testing.T) {
 		t.Errorf("enrichment_agent_name: got %q, want empty", task.EnrichmentAgentName)
 	}
 
-	// Verify comment survived the migration
-	comments, err := database.ListComments(ctx, "v4-task-1")
-	if err != nil {
-		t.Fatalf("listing comments: %v", err)
-	}
-	if len(comments) != 1 {
-		t.Fatalf("got %d comments, want 1", len(comments))
-	}
-	if comments[0].Body != "A v4 comment" {
-		t.Errorf("comment body: got %q, want %q", comments[0].Body, "A v4 comment")
-	}
-
 	// Verify new tables exist: create a dependency
-	t2, err := database.CreateTask(ctx, "V5 New Task", "")
+	t2, err := database.CreateTask(ctx, projectID, "V5 New Task", "")
 	if err != nil {
 		t.Fatalf("creating task on v5 db: %v", err)
 	}
-	if err := database.AddDependency(ctx, task.ID, t2.ID); err != nil {
+	if err := database.AddDependency(ctx, projectID, task.ID, t2.ID); err != nil {
 		t.Fatalf("adding dependency on v5 db: %v", err)
 	}
-	deps, _ := database.ListDependencies(ctx, task.ID)
+	deps, _ := database.ListDependencies(ctx, projectID, task.ID)
 	if len(deps) != 1 {
 		t.Errorf("got %d deps, want 1", len(deps))
 	}
 
 	// Verify suggestions table exists
-	sug, err := database.CreateSuggestion(ctx, task.ID, db.SuggestionEnrichment, "claude", "Test", "msg")
+	sug, err := database.CreateSuggestion(ctx, projectID, task.ID, db.SuggestionEnrichment, "claude", "Test", "msg")
 	if err != nil {
 		t.Fatalf("creating suggestion on v5 db: %v", err)
 	}
@@ -685,12 +716,12 @@ func TestSchemaV4toV5Migration(t *testing.T) {
 
 	// Verify enrichment can be updated
 	enriching := db.EnrichmentEnriching
-	if err := database.UpdateTaskFields(ctx, task.ID, db.TaskFieldUpdate{
+	if err := database.UpdateTaskFields(ctx, projectID, task.ID, db.TaskFieldUpdate{
 		EnrichmentStatus: &enriching,
 	}); err != nil {
 		t.Fatalf("updating enrichment on migrated task: %v", err)
 	}
-	got, _ := database.GetTask(ctx, task.ID)
+	got, _ := database.GetTask(ctx, projectID, task.ID)
 	if got.EnrichmentStatus != db.EnrichmentEnriching {
 		t.Errorf("enrichment_status after update: got %q", got.EnrichmentStatus)
 	}

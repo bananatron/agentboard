@@ -1,10 +1,19 @@
 package db
 
-const schemaVersion = 7
+const schemaVersion = 8
 
 const schemaSQL = `
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL CHECK(length(title) > 0 AND length(title) <= 500),
     description TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'backlog'
@@ -31,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE TABLE IF NOT EXISTS comments (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     author TEXT NOT NULL CHECK(length(author) > 0),
     body TEXT NOT NULL CHECK(length(body) > 0),
@@ -38,6 +48,7 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 
 CREATE TABLE IF NOT EXISTS task_dependencies (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     depends_on TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -47,6 +58,7 @@ CREATE TABLE IF NOT EXISTS task_dependencies (
 
 CREATE TABLE IF NOT EXISTS suggestions (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
     type TEXT NOT NULL CHECK(type IN ('enrichment','proposal','hint')),
     author TEXT NOT NULL DEFAULT '',
@@ -67,13 +79,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_status_position ON tasks(status, position);
+CREATE INDEX IF NOT EXISTS idx_projects_slug ON projects(slug);
+CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON tasks(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_project_assignee ON tasks(project_id, assignee);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_project_status_position ON tasks(project_id, status, position);
 CREATE INDEX IF NOT EXISTS idx_comments_task_id ON comments(task_id);
+CREATE INDEX IF NOT EXISTS idx_comments_project_task ON comments(project_id, task_id);
 CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on);
+CREATE INDEX IF NOT EXISTS idx_task_deps_project_task ON task_dependencies(project_id, task_id);
 CREATE INDEX IF NOT EXISTS idx_suggestions_task_id ON suggestions(task_id);
-CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
+CREATE INDEX IF NOT EXISTS idx_suggestions_project_status ON suggestions(project_id, status);
 `
 
 const migrateV1toV2 = `
@@ -277,4 +292,81 @@ DROP TABLE task_dependencies;
 ALTER TABLE task_dependencies_v7 RENAME TO task_dependencies;
 
 CREATE INDEX idx_task_deps_depends_on ON task_dependencies(depends_on);
+`
+
+const migrateV7toV8CreateProjects = `
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_projects_slug ON projects(slug);
+`
+
+const migrateV7toV8CreateTasks = `
+CREATE TABLE tasks_v8 (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL CHECK(length(title) > 0 AND length(title) <= 500),
+    description TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'backlog'
+        CHECK(status IN ('backlog','brainstorm','planning','in_progress','review','done')),
+    assignee TEXT DEFAULT '',
+    branch_name TEXT DEFAULT '',
+    pr_url TEXT DEFAULT '',
+    pr_number INTEGER DEFAULT 0,
+    agent_name TEXT DEFAULT '',
+    agent_status TEXT DEFAULT 'idle'
+        CHECK(agent_status IN ('idle','active','completed','error')),
+    agent_started_at TEXT DEFAULT '',
+    agent_spawned_status TEXT DEFAULT '',
+    reset_requested INTEGER DEFAULT 0,
+    skip_permissions INTEGER DEFAULT 0,
+    enrichment_status TEXT DEFAULT ''
+        CHECK(enrichment_status IN ('','pending','enriching','done','error','skipped')),
+    enrichment_agent_name TEXT DEFAULT '',
+    agent_activity TEXT DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`
+
+const migrateV7toV8CreateComments = `
+CREATE TABLE comments_v8 (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    author TEXT NOT NULL CHECK(length(author) > 0),
+    body TEXT NOT NULL CHECK(length(body) > 0),
+    created_at TEXT NOT NULL
+);
+`
+
+const migrateV7toV8CreateDeps = `
+CREATE TABLE task_dependencies_v8 (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (task_id, depends_on),
+    CHECK(task_id != depends_on)
+);
+`
+
+const migrateV7toV8CreateSuggestions = `
+CREATE TABLE suggestions_v8 (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK(type IN ('enrichment','proposal','hint')),
+    author TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','accepted','dismissed')),
+    created_at TEXT NOT NULL
+);
 `

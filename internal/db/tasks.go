@@ -21,7 +21,7 @@ func scanTask(s scanner) (Task, error) {
 	var createdAt, updatedAt string
 	var resetRequested, skipPermissions int
 	if err := s.Scan(
-		&t.ID, &t.Title, &t.Description, &t.Status,
+		&t.ID, &t.ProjectID, &t.Title, &t.Description, &t.Status,
 		&t.Assignee, &t.BranchName, &t.PRUrl, &t.PRNumber,
 		&t.AgentName, &t.AgentStatus, &t.AgentStartedAt, &t.AgentSpawnedStatus,
 		&resetRequested, &skipPermissions,
@@ -44,13 +44,13 @@ func scanTask(s scanner) (Task, error) {
 	return t, nil
 }
 
-const taskColumns = `id, title, description, status, assignee, branch_name, pr_url, pr_number,
+const taskColumns = `id, project_id, title, description, status, assignee, branch_name, pr_url, pr_number,
 		        agent_name, agent_status, agent_started_at, agent_spawned_status,
 		        reset_requested, skip_permissions,
 		        enrichment_status, enrichment_agent_name,
 		        agent_activity, position, created_at, updated_at`
 
-func (d *DB) CreateTask(ctx context.Context, title, description string) (*Task, error) {
+func (d *DB) CreateTask(ctx context.Context, projectID, title, description string) (*Task, error) {
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
@@ -63,7 +63,7 @@ func (d *DB) CreateTask(ctx context.Context, title, description string) (*Task, 
 	// Get next position for backlog column (within transaction)
 	var maxPos sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		"SELECT MAX(position) FROM tasks WHERE status = ?", StatusBacklog).Scan(&maxPos)
+		"SELECT MAX(position) FROM tasks WHERE project_id = ? AND status = ?", projectID, StatusBacklog).Scan(&maxPos)
 	if err != nil {
 		return nil, fmt.Errorf("getting max position: %w", err)
 	}
@@ -74,6 +74,7 @@ func (d *DB) CreateTask(ctx context.Context, title, description string) (*Task, 
 
 	task := &Task{
 		ID:               id,
+		ProjectID:        projectID,
 		Title:            title,
 		Description:      description,
 		Status:           StatusBacklog,
@@ -85,12 +86,12 @@ func (d *DB) CreateTask(ctx context.Context, title, description string) (*Task, 
 	}
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO tasks (id, title, description, status, assignee, branch_name, pr_url, pr_number,
+		`INSERT INTO tasks (id, project_id, title, description, status, assignee, branch_name, pr_url, pr_number,
 		 agent_name, agent_status, agent_started_at, agent_spawned_status, reset_requested,
 		 skip_permissions, enrichment_status, enrichment_agent_name, agent_activity,
 		 position, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.ID, task.Title, task.Description, task.Status,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.ProjectID, task.Title, task.Description, task.Status,
 		task.Assignee, task.BranchName, task.PRUrl, task.PRNumber,
 		task.AgentName, task.AgentStatus, task.AgentStartedAt, task.AgentSpawnedStatus,
 		boolToInt(task.ResetRequested), boolToInt(task.SkipPermissions),
@@ -107,9 +108,9 @@ func (d *DB) CreateTask(ctx context.Context, title, description string) (*Task, 
 	return task, nil
 }
 
-func (d *DB) GetTask(ctx context.Context, id string) (*Task, error) {
+func (d *DB) GetTask(ctx context.Context, projectID, id string) (*Task, error) {
 	row := d.conn.QueryRowContext(ctx,
-		`SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
+		`SELECT `+taskColumns+` FROM tasks WHERE id = ? AND project_id = ?`, id, projectID)
 	t, err := scanTask(row)
 	if err != nil {
 		return nil, fmt.Errorf("getting task: %w", err)
@@ -117,9 +118,9 @@ func (d *DB) GetTask(ctx context.Context, id string) (*Task, error) {
 	return &t, nil
 }
 
-func (d *DB) ListTasks(ctx context.Context) ([]Task, error) {
+func (d *DB) ListTasks(ctx context.Context, projectID string) ([]Task, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT `+taskColumns+` FROM tasks ORDER BY status, position`)
+		`SELECT `+taskColumns+` FROM tasks WHERE project_id = ? ORDER BY status, position`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("listing tasks: %w", err)
 	}
@@ -136,9 +137,9 @@ func (d *DB) ListTasks(ctx context.Context) ([]Task, error) {
 	return tasks, rows.Err()
 }
 
-func (d *DB) ListTasksByStatus(ctx context.Context, status TaskStatus) ([]Task, error) {
+func (d *DB) ListTasksByStatus(ctx context.Context, projectID string, status TaskStatus) ([]Task, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT `+taskColumns+` FROM tasks WHERE status = ? ORDER BY position`, status)
+		`SELECT `+taskColumns+` FROM tasks WHERE project_id = ? AND status = ? ORDER BY position`, projectID, status)
 	if err != nil {
 		return nil, fmt.Errorf("listing tasks by status: %w", err)
 	}
@@ -156,6 +157,9 @@ func (d *DB) ListTasksByStatus(ctx context.Context, status TaskStatus) ([]Task, 
 }
 
 func (d *DB) UpdateTask(ctx context.Context, task *Task) error {
+	if strings.TrimSpace(task.ProjectID) == "" {
+		return fmt.Errorf("task project id is required")
+	}
 	task.UpdatedAt = time.Now().UTC()
 	_, err := d.conn.ExecContext(ctx,
 		`UPDATE tasks SET title=?, description=?, status=?, assignee=?, branch_name=?,
@@ -163,12 +167,12 @@ func (d *DB) UpdateTask(ctx context.Context, task *Task) error {
 		 agent_spawned_status=?, reset_requested=?, skip_permissions=?,
 		 enrichment_status=?, enrichment_agent_name=?,
 		 agent_activity=?, position=?, updated_at=?
-		 WHERE id=?`,
+		 WHERE id=? AND project_id=?`,
 		task.Title, task.Description, task.Status, task.Assignee, task.BranchName,
 		task.PRUrl, task.PRNumber, task.AgentName, task.AgentStatus, task.AgentStartedAt,
 		task.AgentSpawnedStatus, boolToInt(task.ResetRequested), boolToInt(task.SkipPermissions),
 		task.EnrichmentStatus, task.EnrichmentAgentName,
-		task.AgentActivity, task.Position, task.UpdatedAt.Format(time.RFC3339), task.ID)
+		task.AgentActivity, task.Position, task.UpdatedAt.Format(time.RFC3339), task.ID, task.ProjectID)
 	if err != nil {
 		return fmt.Errorf("updating task: %w", err)
 	}
@@ -177,7 +181,7 @@ func (d *DB) UpdateTask(ctx context.Context, task *Task) error {
 
 // UpdateTaskFields updates only non-nil fields. Column names are hardcoded
 // (not user-supplied) so there is no SQL injection risk.
-func (d *DB) UpdateTaskFields(ctx context.Context, id string, fields TaskFieldUpdate) error {
+func (d *DB) UpdateTaskFields(ctx context.Context, projectID, id string, fields TaskFieldUpdate) error {
 	var setClauses []string
 	var args []interface{}
 
@@ -224,9 +228,9 @@ func (d *DB) UpdateTaskFields(ctx context.Context, id string, fields TaskFieldUp
 
 	setClauses = append(setClauses, "updated_at=?")
 	args = append(args, time.Now().UTC().Format(time.RFC3339))
-	args = append(args, id)
+	args = append(args, id, projectID)
 
-	query := fmt.Sprintf("UPDATE tasks SET %s WHERE id=?", strings.Join(setClauses, ", "))
+	query := fmt.Sprintf("UPDATE tasks SET %s WHERE id=? AND project_id=?", strings.Join(setClauses, ", "))
 	_, err := d.conn.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("updating task fields: %w", err)
@@ -235,10 +239,10 @@ func (d *DB) UpdateTaskFields(ctx context.Context, id string, fields TaskFieldUp
 }
 
 // UpdateAgentActivity updates the agent_activity field for a task.
-func (d *DB) UpdateAgentActivity(ctx context.Context, id, activity string) error {
+func (d *DB) UpdateAgentActivity(ctx context.Context, projectID, id, activity string) error {
 	_, err := d.conn.ExecContext(ctx,
-		`UPDATE tasks SET agent_activity=?, updated_at=? WHERE id=?`,
-		activity, time.Now().UTC().Format(time.RFC3339), id)
+		`UPDATE tasks SET agent_activity=?, updated_at=? WHERE id=? AND project_id=?`,
+		activity, time.Now().UTC().Format(time.RFC3339), id, projectID)
 	if err != nil {
 		return fmt.Errorf("updating agent activity: %w", err)
 	}
@@ -252,7 +256,7 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-func (d *DB) MoveTask(ctx context.Context, id string, newStatus TaskStatus) error {
+func (d *DB) MoveTask(ctx context.Context, projectID, id string, newStatus TaskStatus) error {
 	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -262,7 +266,7 @@ func (d *DB) MoveTask(ctx context.Context, id string, newStatus TaskStatus) erro
 	// Get next position in target column
 	var maxPos sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		"SELECT MAX(position) FROM tasks WHERE status = ?", newStatus).Scan(&maxPos)
+		"SELECT MAX(position) FROM tasks WHERE project_id = ? AND status = ?", projectID, newStatus).Scan(&maxPos)
 	if err != nil {
 		return fmt.Errorf("getting max position: %w", err)
 	}
@@ -273,8 +277,8 @@ func (d *DB) MoveTask(ctx context.Context, id string, newStatus TaskStatus) erro
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = tx.ExecContext(ctx,
-		"UPDATE tasks SET status=?, position=?, updated_at=? WHERE id=?",
-		newStatus, pos, now, id)
+		"UPDATE tasks SET status=?, position=?, updated_at=? WHERE id=? AND project_id=?",
+		newStatus, pos, now, id, projectID)
 	if err != nil {
 		return fmt.Errorf("moving task: %w", err)
 	}
@@ -282,8 +286,8 @@ func (d *DB) MoveTask(ctx context.Context, id string, newStatus TaskStatus) erro
 	return tx.Commit()
 }
 
-func (d *DB) DeleteTask(ctx context.Context, id string) error {
-	_, err := d.conn.ExecContext(ctx, "DELETE FROM tasks WHERE id=?", id)
+func (d *DB) DeleteTask(ctx context.Context, projectID, id string) error {
+	_, err := d.conn.ExecContext(ctx, "DELETE FROM tasks WHERE id=? AND project_id=?", id, projectID)
 	if err != nil {
 		return fmt.Errorf("deleting task: %w", err)
 	}
@@ -291,10 +295,10 @@ func (d *DB) DeleteTask(ctx context.Context, id string) error {
 }
 
 // NextPosition returns the next available position for a given status column.
-func (d *DB) NextPosition(ctx context.Context, status TaskStatus) (int, error) {
+func (d *DB) NextPosition(ctx context.Context, projectID string, status TaskStatus) (int, error) {
 	var maxPos sql.NullInt64
 	err := d.conn.QueryRowContext(ctx,
-		"SELECT MAX(position) FROM tasks WHERE status = ?", status).Scan(&maxPos)
+		"SELECT MAX(position) FROM tasks WHERE project_id = ? AND status = ?", projectID, status).Scan(&maxPos)
 	if err != nil {
 		return 0, err
 	}

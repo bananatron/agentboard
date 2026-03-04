@@ -6,20 +6,20 @@ import (
 	"time"
 )
 
-func (d *DB) AddDependency(ctx context.Context, taskID, dependsOn string) error {
+func (d *DB) AddDependency(ctx context.Context, projectID, taskID, dependsOn string) error {
 	_, err := d.conn.ExecContext(ctx,
-		`INSERT INTO task_dependencies (task_id, depends_on, created_at) VALUES (?, ?, ?)`,
-		taskID, dependsOn, time.Now().UTC().Format(time.RFC3339))
+		`INSERT INTO task_dependencies (project_id, task_id, depends_on, created_at) VALUES (?, ?, ?, ?)`,
+		projectID, taskID, dependsOn, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("adding dependency: %w", err)
 	}
 	return nil
 }
 
-func (d *DB) RemoveDependency(ctx context.Context, taskID, dependsOn string) error {
+func (d *DB) RemoveDependency(ctx context.Context, projectID, taskID, dependsOn string) error {
 	_, err := d.conn.ExecContext(ctx,
-		`DELETE FROM task_dependencies WHERE task_id=? AND depends_on=?`,
-		taskID, dependsOn)
+		`DELETE FROM task_dependencies WHERE project_id=? AND task_id=? AND depends_on=?`,
+		projectID, taskID, dependsOn)
 	if err != nil {
 		return fmt.Errorf("removing dependency: %w", err)
 	}
@@ -27,9 +27,9 @@ func (d *DB) RemoveDependency(ctx context.Context, taskID, dependsOn string) err
 }
 
 // ListDependencies returns IDs of tasks that taskID depends on.
-func (d *DB) ListDependencies(ctx context.Context, taskID string) ([]string, error) {
+func (d *DB) ListDependencies(ctx context.Context, projectID, taskID string) ([]string, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT depends_on FROM task_dependencies WHERE task_id=?`, taskID)
+		`SELECT depends_on FROM task_dependencies WHERE project_id=? AND task_id=?`, projectID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("listing dependencies: %w", err)
 	}
@@ -47,9 +47,9 @@ func (d *DB) ListDependencies(ctx context.Context, taskID string) ([]string, err
 }
 
 // ListDependents returns IDs of tasks that depend on taskID.
-func (d *DB) ListDependents(ctx context.Context, taskID string) ([]string, error) {
+func (d *DB) ListDependents(ctx context.Context, projectID, taskID string) ([]string, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT task_id FROM task_dependencies WHERE depends_on=?`, taskID)
+		`SELECT task_id FROM task_dependencies WHERE project_id=? AND depends_on=?`, projectID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("listing dependents: %w", err)
 	}
@@ -68,8 +68,9 @@ func (d *DB) ListDependents(ctx context.Context, taskID string) ([]string, error
 
 // HasCycle checks if adding a dependency (taskID depends on dependsOnID) would create a cycle.
 // It loads the full dependency graph in a single query and traverses in-memory.
-func (d *DB) HasCycle(ctx context.Context, taskID, dependsOnID string) (bool, error) {
-	rows, err := d.conn.QueryContext(ctx, `SELECT task_id, depends_on FROM task_dependencies`)
+func (d *DB) HasCycle(ctx context.Context, projectID, taskID, dependsOnID string) (bool, error) {
+	rows, err := d.conn.QueryContext(ctx,
+		`SELECT task_id, depends_on FROM task_dependencies WHERE project_id=?`, projectID)
 	if err != nil {
 		return false, fmt.Errorf("loading dependency graph: %w", err)
 	}
@@ -117,9 +118,9 @@ func (d *DB) HasCycle(ctx context.Context, taskID, dependsOnID string) (bool, er
 }
 
 // ListAllDependencies returns a map of taskID -> list of dependency IDs for all tasks.
-func (d *DB) ListAllDependencies(ctx context.Context) (map[string][]string, error) {
+func (d *DB) ListAllDependencies(ctx context.Context, projectID string) (map[string][]string, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT task_id, depends_on FROM task_dependencies`)
+		`SELECT task_id, depends_on FROM task_dependencies WHERE project_id=?`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("listing all dependencies: %w", err)
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +14,9 @@ import (
 )
 
 const testAPIKey = "super-secret"
+const testProjectSlug = "default"
 
-func newTestServer(t *testing.T) (*Server, func()) {
+func newTestServer(t *testing.T) (*Server, string, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	database, err := db.Open(filepath.Join(dir, "board.db"))
@@ -23,13 +25,17 @@ func newTestServer(t *testing.T) (*Server, func()) {
 	}
 	svc := boardpkg.NewLocalService(database)
 	srv := NewServer(svc, testAPIKey)
-	return srv, func() {
+	project, err := database.GetProjectBySlug(context.Background(), testProjectSlug)
+	if err != nil {
+		t.Fatalf("get default project: %v", err)
+	}
+	return srv, project.ID, func() {
 		database.Close()
 	}
 }
 
 func TestAPIRequiresKey(t *testing.T) {
-	srv, cleanup := newTestServer(t)
+	srv, _, cleanup := newTestServer(t)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
@@ -42,15 +48,16 @@ func TestAPIRequiresKey(t *testing.T) {
 }
 
 func TestAPITaskLifecycle(t *testing.T) {
-	srv, cleanup := newTestServer(t)
+	srv, projectID, cleanup := newTestServer(t)
 	defer cleanup()
 
 	// Create task via API.
 	createBody := map[string]any{
 		"title":       "Test Task",
 		"description": "from api",
+		"project_id":  projectID,
 	}
-	resp := doJSONRequest(t, srv, http.MethodPost, "/tasks", createBody)
+	resp := doJSONRequest(t, srv, http.MethodPost, "/tasks", createBody, projectID)
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", resp.Code, resp.Body.String())
 	}
@@ -58,7 +65,7 @@ func TestAPITaskLifecycle(t *testing.T) {
 	decodeBody(t, resp, &created)
 
 	// Get task by ID.
-	getResp := doJSONRequest(t, srv, http.MethodGet, "/tasks/"+created.ID, nil)
+	getResp := doJSONRequest(t, srv, http.MethodGet, "/tasks/"+created.ID, nil, projectID)
 	if getResp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", getResp.Code, getResp.Body.String())
 	}
@@ -70,7 +77,7 @@ func TestAPITaskLifecycle(t *testing.T) {
 
 	// Update status to in_progress.
 	updateBody := map[string]any{"status": "in_progress"}
-	updateResp := doJSONRequest(t, srv, http.MethodPatch, "/tasks/"+created.ID, updateBody)
+	updateResp := doJSONRequest(t, srv, http.MethodPatch, "/tasks/"+created.ID, updateBody, projectID)
 	if updateResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 on update, got %d: %s", updateResp.Code, updateResp.Body.String())
 	}
@@ -81,12 +88,12 @@ func TestAPITaskLifecycle(t *testing.T) {
 
 	// Add a comment.
 	commentBody := map[string]any{"author": "tester", "body": "looks good"}
-	commentResp := doJSONRequest(t, srv, http.MethodPost, "/tasks/"+created.ID+"/comments", commentBody)
+	commentResp := doJSONRequest(t, srv, http.MethodPost, "/tasks/"+created.ID+"/comments", commentBody, projectID)
 	if commentResp.Code != http.StatusCreated {
 		t.Fatalf("expected 201 comment, got %d: %s", commentResp.Code, commentResp.Body.String())
 	}
 
-	commentsResp := doJSONRequest(t, srv, http.MethodGet, "/tasks/"+created.ID+"/comments", nil)
+	commentsResp := doJSONRequest(t, srv, http.MethodGet, "/tasks/"+created.ID+"/comments", nil, projectID)
 	if commentsResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 comments, got %d", commentsResp.Code)
 	}
@@ -97,7 +104,7 @@ func TestAPITaskLifecycle(t *testing.T) {
 	}
 
 	// Verify list endpoint returns filtered search results.
-	listResp := doJSONRequest(t, srv, http.MethodGet, "/tasks?search=api", nil)
+	listResp := doJSONRequest(t, srv, http.MethodGet, "/tasks?search=api", nil, projectID)
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 list, got %d", listResp.Code)
 	}
@@ -109,13 +116,14 @@ func TestAPITaskLifecycle(t *testing.T) {
 }
 
 func TestAPISuggestionFlow(t *testing.T) {
-	srv, cleanup := newTestServer(t)
+	srv, projectID, cleanup := newTestServer(t)
 	defer cleanup()
 
 	// Seed a task.
 	taskResp := doJSONRequest(t, srv, http.MethodPost, "/tasks", map[string]any{
-		"title": "Need suggestion",
-	})
+		"title":      "Need suggestion",
+		"project_id": projectID,
+	}, projectID)
 	if taskResp.Code != http.StatusCreated {
 		t.Fatalf("expected 201 task, got %d", taskResp.Code)
 	}
@@ -124,10 +132,11 @@ func TestAPISuggestionFlow(t *testing.T) {
 
 	// Create a suggestion for that task.
 	sugResp := doJSONRequest(t, srv, http.MethodPost, "/tasks/"+task.ID+"/suggestions", map[string]any{
-		"title":   "Try something",
-		"message": "maybe refactor",
-		"author":  "bot",
-	})
+		"project_id": projectID,
+		"title":      "Try something",
+		"message":    "maybe refactor",
+		"author":     "bot",
+	}, projectID)
 	if sugResp.Code != http.StatusCreated {
 		t.Fatalf("expected 201 suggestion, got %d: %s", sugResp.Code, sugResp.Body.String())
 	}
@@ -135,7 +144,7 @@ func TestAPISuggestionFlow(t *testing.T) {
 	decodeBody(t, sugResp, &suggestion)
 
 	// List pending suggestions.
-	listResp := doJSONRequest(t, srv, http.MethodGet, "/suggestions?status=pending", nil)
+	listResp := doJSONRequest(t, srv, http.MethodGet, "/suggestions?status=pending", nil, projectID)
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 suggestions, got %d", listResp.Code)
 	}
@@ -146,12 +155,12 @@ func TestAPISuggestionFlow(t *testing.T) {
 	}
 
 	// Accept the suggestion.
-	accResp := doJSONRequest(t, srv, http.MethodPost, "/suggestions/"+suggestion.ID+"/accept", nil)
+	accResp := doJSONRequest(t, srv, http.MethodPost, "/suggestions/"+suggestion.ID+"/accept", nil, projectID)
 	if accResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 accept, got %d: %s", accResp.Code, accResp.Body.String())
 	}
 
-	getResp := doJSONRequest(t, srv, http.MethodGet, "/suggestions/"+suggestion.ID, nil)
+	getResp := doJSONRequest(t, srv, http.MethodGet, "/suggestions/"+suggestion.ID, nil, projectID)
 	if getResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 suggestion get, got %d: %s", getResp.Code, getResp.Body.String())
 	}
@@ -163,19 +172,19 @@ func TestAPISuggestionFlow(t *testing.T) {
 }
 
 func TestAPIDependencies(t *testing.T) {
-	srv, cleanup := newTestServer(t)
+	srv, projectID, cleanup := newTestServer(t)
 	defer cleanup()
 
-	taskA := createTask(t, srv, "Task A")
-	taskB := createTask(t, srv, "Task B")
+	taskA := createTask(t, srv, projectID, "Task A")
+	taskB := createTask(t, srv, projectID, "Task B")
 
 	body := map[string]any{"depends_on": taskB.ID}
-	addResp := doJSONRequest(t, srv, http.MethodPost, "/tasks/"+taskA.ID+"/dependencies", body)
+	addResp := doJSONRequest(t, srv, http.MethodPost, "/tasks/"+taskA.ID+"/dependencies", body, projectID)
 	if addResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 add dependency, got %d: %s", addResp.Code, addResp.Body.String())
 	}
 
-	listResp := doJSONRequest(t, srv, http.MethodGet, "/tasks/"+taskA.ID+"/dependencies", nil)
+	listResp := doJSONRequest(t, srv, http.MethodGet, "/tasks/"+taskA.ID+"/dependencies", nil, projectID)
 	if listResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 get dependencies, got %d", listResp.Code)
 	}
@@ -187,17 +196,77 @@ func TestAPIDependencies(t *testing.T) {
 		t.Fatalf("expected dependency on %s, got %#v", taskB.ID, result.BlockedBy)
 	}
 
-	delResp := doJSONRequest(t, srv, http.MethodDelete, "/tasks/"+taskA.ID+"/dependencies", body)
+	delResp := doJSONRequest(t, srv, http.MethodDelete, "/tasks/"+taskA.ID+"/dependencies", body, projectID)
 	if delResp.Code != http.StatusOK {
 		t.Fatalf("expected 200 remove dependency, got %d: %s", delResp.Code, delResp.Body.String())
 	}
 }
 
-func createTask(t *testing.T, srv *Server, title string) db.Task {
+func TestTasksScopedByProject(t *testing.T) {
+	srv, defaultProjectID, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	otherProject, err := srv.svc.CreateProject(ctx, "secondary", "Secondary")
+	if err != nil {
+		t.Fatalf("creating project: %v", err)
+	}
+
+	createBody := map[string]any{
+		"title":      "Default Task",
+		"project_id": defaultProjectID,
+	}
+	resp := doJSONRequest(t, srv, http.MethodPost, "/tasks", createBody, defaultProjectID)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("default project create task: %d %s", resp.Code, resp.Body.String())
+	}
+
+	otherBody := map[string]any{
+		"title":      "Other Task",
+		"project_id": otherProject.ID,
+	}
+	data, _ := json.Marshal(otherBody)
+	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", testAPIKey)
+	req.Header.Set("X-Agentboard-Project", otherProject.Slug)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("other project create task: %d %s", rr.Code, rr.Body.String())
+	}
+
+	listDefault := doJSONRequest(t, srv, http.MethodGet, "/tasks", nil, defaultProjectID)
+	if listDefault.Code != http.StatusOK {
+		t.Fatalf("list default tasks: %d", listDefault.Code)
+	}
+	var defaultTasks []db.Task
+	decodeBody(t, listDefault, &defaultTasks)
+	if len(defaultTasks) != 1 || defaultTasks[0].Title != "Default Task" {
+		t.Fatalf("expected only default task, got %#v", defaultTasks)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	req.Header.Set("X-API-Key", testAPIKey)
+	req.Header.Set("X-Agentboard-Project", otherProject.Slug)
+	rr = httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list other project: %d", rr.Code)
+	}
+	var otherTasks []db.Task
+	decodeBody(t, rr, &otherTasks)
+	if len(otherTasks) != 1 || otherTasks[0].Title != "Other Task" {
+		t.Fatalf("expected other project task, got %#v", otherTasks)
+	}
+}
+
+func createTask(t *testing.T, srv *Server, projectID, title string) db.Task {
 	t.Helper()
 	resp := doJSONRequest(t, srv, http.MethodPost, "/tasks", map[string]any{
-		"title": title,
-	})
+		"title":      title,
+		"project_id": projectID,
+	}, projectID)
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("expected task created, got %d: %s", resp.Code, resp.Body.String())
 	}
@@ -206,7 +275,7 @@ func createTask(t *testing.T, srv *Server, title string) db.Task {
 	return task
 }
 
-func doJSONRequest(t *testing.T, srv *Server, method, path string, body interface{}) *httptest.ResponseRecorder {
+func doJSONRequest(t *testing.T, srv *Server, method, path string, body interface{}, projectID string) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *bytes.Reader
 	if body != nil {
@@ -224,6 +293,9 @@ func doJSONRequest(t *testing.T, srv *Server, method, path string, body interfac
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("X-API-Key", testAPIKey)
+	if projectID != "" {
+		req.Header.Set("X-Agentboard-Project", testProjectSlug)
+	}
 
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)

@@ -1,370 +1,69 @@
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/)
+# agentboard API
 
-```
- ┌─────────────────────────────┐
- │        agentboard           │
- │  collaborative kanban tui   │
- └─────────────────────────────┘
-```
+A lightweight HTTP service for managing agent-friendly kanban boards. The runtime is designed for Railway, runs a single binary (`agentboard-api`), and persists state in SQLite.
 
-Real-time collaborative Kanban board for AI coding agents. Terminal-native. Agent-agnostic.
-
-<!-- TODO: Add terminal screenshot/GIF -->
-
-## Prerequisites
-
-| Prerequisite | Version | Purpose |
-|---|---|---|
-| [tmux](https://github.com/tmux/tmux) | 3.0+ | Agent session management |
-| [gh CLI](https://cli.github.com/) | 2.0+ | GitHub authentication |
-| AI CLI tool | any | Claude Code, Cursor, Antigravity, etc. |
-
-> **Note:** tmux is only required for spawning work agents. The TUI and task enrichment work without tmux.
-
-**Platform:** macOS and Linux are fully supported. Windows requires WSL.
-
-## Installation
-
-### Quick install (recommended)
+## Quick start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/markx3/agentboard/main/install.sh | bash
-```
-
-Or if you prefer to inspect the script first:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/markx3/agentboard/main/install.sh -o install.sh
-less install.sh
-bash install.sh
-```
-
-### Other methods
-
-```bash
-# Via go install (requires Go 1.25+)
-go install github.com/markx3/agentboard/cmd/agentboard@latest
-
-# Or build from source
 git clone https://github.com/markx3/agentboard.git
 cd agentboard
-go build -o agentboard ./cmd/agentboard
+
+export AGENTBOARD_DB_PATH="$PWD/board.db"
+export AGENTBOARD_API_KEY="$(openssl rand -hex 16)"
+export PORT=8080
+
+go run ./cmd/agentboard-api
 ```
 
-## Quick Start
-
-### Starting a new project
+Then create a project and a task:
 
 ```bash
-agentboard init    # creates .agentboard/ directory
-agentboard         # launch TUI (becomes peer-leader)
+BASE=http://127.0.0.1:$PORT
+HDR=(-H "X-API-Key: $AGENTBOARD_API_KEY")
+
+PROJECT=$(curl "${HDR[@]}" -s -X POST -H 'Content-Type: application/json' \
+  -d '{"slug":"default","name":"Default"}' "$BASE/projects" | jq -r .id)
+
+curl "${HDR[@]}" -H "X-Agentboard-Project: default" -H 'Content-Type: application/json' \
+  -d '{"title":"hello","description":"world","project_id":"'$PROJECT'"}' "$BASE/tasks"
 ```
 
-### Joining an existing board
+## Environment variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `AGENTBOARD_DB_PATH` | ✓ | Absolute path to the SQLite database. Mount `/data` on Railway and set `/data/board.db`. |
+| `AGENTBOARD_API_KEY` | ✓ | Shared secret; sent via `X-API-Key` or `Authorization: Bearer`. |
+| `PORT` |  | Listener port (defaults to `8080`). |
+
+## API overview
+
+All requests must include `X-API-Key`. Every non-project route also needs either `X-Agentboard-Project: <slug>` or `?project_id=<uuid>`.
+
+- `GET /projects`, `POST /projects`, `GET /projects/{id|slug}`, `PUT /projects/{id}`
+- `GET /tasks` (filters: `status`, `assignee`, `search`)
+- `POST /tasks` with `{"title": "...", "project_id": "<uuid>"}` plus optional `description` and `enrich`
+- Task subroutes: `/claim`, `/unclaim`, `/agent-activity`, `/comments`, `/dependencies`, `/suggestions`
+- `GET/POST /suggestions`, `/suggestions/{id}/accept`, `/suggestions/{id}/dismiss`
+- `GET /status` — accepts `Accept: text/plain` or `?format=text` for a simple board view
+
+Plaintext responses are supported for `/tasks` and `/status` to mirror the old TUI at a glance.
+
+## Railway deployment
+
+The provided `Dockerfile` builds a static binary and copies only `/usr/local/bin/agentboard-api` into Distroless. Typical Railway setup:
+
+1. Mount a volume at `/data`.
+2. Set `AGENTBOARD_DB_PATH=/data/board.db`.
+3. Set `AGENTBOARD_API_KEY=<your-secret>`.
+4. Deploy the repository—no additional services are required.
+
+## Testing
 
 ```bash
-agentboard                         # auto-discovers via .agentboard/server.json
-agentboard --connect host:port     # manual connection
-```
-
-## HTTP API
-
-Run `agentboard api` to expose the same CLI surface area over JSON. Every endpoint requires an API key that is generated on first run and persisted in `.env` as `AGENTBOARD_API_KEY` (the file is ignored by git). Keep this value private and pass it to the server with the `X-API-Key` header (or `Authorization: Bearer <key>`).
-
-```bash
-# Start a local API server
-agentboard api --bind 0.0.0.0 --port 8080
-
-# Load the key we just generated
-export $(grep AGENTBOARD_API_KEY .env)
-
-# Call endpoints (missing headers returns 401)
-curl -H "X-API-Key: $AGENTBOARD_API_KEY" http://127.0.0.1:8080/status
-curl -H "X-API-Key: $AGENTBOARD_API_KEY" -d '{"title":"New task"}' \
-     -H "Content-Type: application/json" http://127.0.0.1:8080/tasks
-```
-
-Available routes include:
-
-- `GET /status` — board summary, agents, enrichment queue
-- `GET/POST /tasks` and `GET/PATCH/DELETE /tasks/{id}`
-- `POST /tasks/{id}/claim`, `POST /tasks/{id}/comments`, `/dependencies`, `/suggestions`
-- `GET/POST /suggestions`, `POST /suggestions/{id}/accept|dismiss`
-
-All responses are intentionally terse (ID, status, and essential metadata) so other agents can consume them with minimal context.
-
-## Features
-
-- **Collaborative Kanban board** in the terminal
-- **Real-time sync** via WebSocket (peer-leader model)
-- **Agent-agnostic** — works with any AI CLI tool
-- **Agent lifecycle management** — spawn, monitor, and kill agents via tmux
-- **Task enrichment** — opt-in AI enrichment adds description and context to new tasks
-- **AI proposal inbox** — agents propose new tasks; review and accept/dismiss via `s`
-- **CLI-first design** — TUI for interactive use, subcommands for scripting
-- **SQLite-backed** local persistence
-- **Git worktree isolation** per task
-- **Ngrok tunnel** — expose your board to remote collaborators with `serve --tunnel`
-- **AI enrichment** — automatic task analysis with suggestions and dependency tracking
-- **Task search** — fuzzy search across the board with `/`
-- **Board mode toggle** — switch views with `tab`
-
-## Key Bindings
-
-| Key | Action |
-|---|---|
-| `h` / `l` (or arrows) | Previous / next column |
-| `j` / `k` (or arrows) | Next / previous task |
-| `o` | New task |
-| `enter` | Open task detail |
-| `m` | Move task right |
-| `M` | Move task left |
-| `x` | Delete task |
-| `a` | Spawn agent |
-| `A` | Kill agent |
-| `v` | View agent session |
-| `E` | Toggle task enrichment on/off |
-| `s` | Review AI proposals |
-| `/` | Search tasks |
-| `tab` | Toggle Agent / Detail mode |
-| `?` | Help |
-| `q` | Quit |
-| `esc` | Close overlay / cancel |
-
-## Supported Agents
-
-| Agent | Command | Status |
-|---|---|---|
-| Claude Code | `claude` | Supported |
-| Cursor CLI | `cursor` | Supported |
-| Antigravity | `antigravity` | Supported |
-| Custom | Detected via PATH | Configurable |
-
-## CLI Reference
-
-### Root command
-
-```
-agentboard [--connect <host:port|wss://url>]
-```
-
-Launches the TUI. Use `--connect` to connect to a specific server instead of auto-discovering. Accepts both `host:port` and `wss://` URLs (for ngrok tunnels).
-
-### Subcommands
-
-| Command | Description | Key Flags |
-|---|---|---|
-| `init` | Initialize project config | -- |
-| `serve` | Start dedicated server (no TUI) | `--port`/`-p` (default: random), `--bind` (default: 127.0.0.1), `--tunnel` |
-| `status` | Show board summary | `--json` (includes agents and enrichments) |
-| `task list` | List tasks | `--status`, `--assignee`, `--search`, `--json` |
-| `task create` | Create a new task | `--title` (required), `--description`, `--enrich` |
-| `task move <id> <column>` | Move task to column | -- |
-| `task get <id>` | Get task details | `--json` |
-| `task update <id>` | Update task fields | `--title`, `--description`, `--assignee`, `--branch`, `--pr-url`, `--add-dep`, `--remove-dep` |
-| `task comment <id>` | Add a comment to a task | `--author`, `--body` |
-| `task delete <id>` | Delete a task | -- |
-| `task claim <id>` | Claim a task | `--user` |
-| `task unclaim <id>` | Unclaim a task | -- |
-| `task update <id>` | Update task fields | `--title`, `--description`, `--assignee`, `--branch`, `--pr-url`, `--add-dep`, `--remove-dep` |
-| `task comment <id>` | Add a comment to a task | `--author` (required), `--body` (required) |
-| `task block <id> <blocker-id>` | Mark task as blocked by another | -- |
-| `task unblock <id> <blocker-id>` | Remove a dependency | -- |
-| `task suggest` | Propose a new task (AI inbox) | `--title` (required), `--description` |
-| `task suggestions` | List suggestions | `--status` (pending/accepted/dismissed) |
-| `task suggestion accept <id>` | Accept a suggestion | -- |
-| `task suggestion dismiss <id>` | Dismiss a suggestion | -- |
-| `agent start <task-id>` | Spawn an agent for a task | -- |
-| `agent kill <task-id>` | Kill a running agent | -- |
-| `agent status <task-id> <msg>` | Report agent activity | `--json` |
-| `agent request-reset <task-id>` | Request fresh context for agent's next stage | -- |
-
-**Valid columns for `task move`:** `backlog`, `brainstorm`, `planning`, `in_progress`, `review`, `done`
-
-### Task enrichment
-
-Enrichment runs Claude Code in one-shot (`--print`) mode to add context to a task — it scans git history, lists open tasks, then updates the description and leaves a comment.
-
-Enrichment is **opt-in**. New tasks are not enriched by default.
-
-```bash
-# Opt in at creation
-agentboard task create --title "My task" --enrich
-
-# Toggle in TUI: press E on any task (pending ↔ skipped)
-# A task set to "pending" will be picked up by the next poll tick (~2.5s)
-```
-
-The enrichment status is shown in the task detail view (`Enrich: pending / enriching / done / error / skipped`).
-
-### AI proposal inbox
-
-Agents (or scripts) can propose new tasks without creating them directly:
-
-```bash
-agentboard task suggest --title "Refactor auth layer" --description "..."
-```
-
-Proposals appear in the TUI's suggestion inbox. Press `s` to review, then accept or dismiss each one. Accepted proposals become real tasks.
-
-### `agentboard status --json`
-
-Machine-readable board summary — useful for agents deciding what to work on next:
-
-```bash
-agentboard status --json
-```
-
-Returns task counts by column, active agents, and enrichment activity.
-
-**Task IDs** accept short prefixes (first 8 chars shown in `task list`).
-
-### Ngrok tunnel
-
-To share your board with remote collaborators:
-
-```bash
-# Leader: expose the board via ngrok
-NGROK_AUTHTOKEN=<token> agentboard serve --tunnel
-# → prints: agentboard --connect wss://abc123.ngrok.io
-
-# Peer: connect from anywhere
-agentboard --connect wss://abc123.ngrok.io
-```
-
-## Configuration
-
-Running `agentboard init` creates:
-
-```
-.agentboard/
-  config.toml    # project config (commit this)
-  .gitignore     # auto-generated (ignores server.json, worktrees/)
-  board.db       # SQLite database (auto-created on first run)
-  server.json    # ephemeral peer discovery (gitignored)
-```
-
-> Need to relocate the database (e.g., Docker volume, Railway)? Set `AGENTBOARD_DB_PATH` to the desired absolute path before launching `agentboard` or `agentboard api`. If unset, it defaults to `.agentboard/board.db`.
-
-**Default `config.toml`:**
-
-```toml
-[project]
-name = ""
-
-[agent]
-preferred = "claude"
-
-[worktree]
-copy_files = [".env", ".env.local"]
-init_script = ""
-```
-
-## Architecture
-
-```mermaid
-graph TB
-    subgraph "agentboard binary"
-        TUI[TUI - Bubble Tea]
-        CLI[CLI Subcommands]
-        BS[Board Service]
-        DB[(SQLite)]
-        WS[WebSocket Sync]
-        AG[Agent Manager]
-        TM[tmux Sessions]
-    end
-
-    TUI --> BS
-    CLI --> BS
-    BS --> DB
-    BS <--> WS
-    TUI --> AG
-    AG --> TM
-
-    WS <-->|peer-leader model| WS2[Other Peers]
-```
-
-## How It Works
-
-Agentboard uses a **peer-leader model** for collaboration. The first instance to start becomes the leader and runs a WebSocket server. Other instances connect as peers and sync in real time.
-
-When you close the TUI, your agents keep running in their tmux sessions. Relaunch `agentboard` to reconnect and resume where you left off.
-
-The TUI and CLI subcommands share the same binary and the same SQLite database. You can use `agentboard task list` in scripts while the TUI is running — they operate on the same data.
-
-## Dependencies
-
-| Library | Purpose |
-|---|---|
-| [Bubble Tea](https://github.com/charmbracelet/bubbletea) | Terminal UI framework |
-| [Bubbles](https://github.com/charmbracelet/bubbles) | TUI components |
-| [Lip Gloss](https://github.com/charmbracelet/lipgloss) | Terminal styling |
-| [Cobra](https://github.com/spf13/cobra) | CLI framework |
-| [gorilla/websocket](https://github.com/gorilla/websocket) | WebSocket communication |
-| [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) | Pure-Go SQLite driver |
-| [google/uuid](https://github.com/google/uuid) | UUID generation |
-| [ngrok/ngrok-go](https://github.com/ngrok/ngrok-go) | Ngrok tunnel integration |
-
-## Deployment (Railway)
-
-The repository ships with a Dockerfile that builds the binary and runs `agentboard api --bind 0.0.0.0`. Railway’s runtime passes the port via `$PORT`, and the CLI respects that env var.
-
-### Steps
-
-1. Create or link a Railway project.
-2. **Persist storage:** attach a volume so the SQLite DB survives restarts:
-   ```bash
-   railway volume add --mount-path /data
-   ```
-   The service (or CLI) must point `AGENTBOARD_DB_PATH` to `/data/board.db` so SQLite writes into the volume.
-3. Set secrets:
-   ```bash
-   railway variables set AGENTBOARD_API_KEY=$(openssl rand -base64 32)
-   railway variables set AGENTBOARD_DB_PATH=/data/board.db
-   ```
-4. Deploy: `railway up` (or via Railway MCP).
-5. Verify:
-
-   ```bash
-   # Unauthenticated request -> 401
-   curl https://<railway-domain>/status
-
-   # Authenticated
-   curl -H "X-API-Key: $AGENTBOARD_API_KEY" \
-        https://<railway-domain>/tasks
-   ```
-
-### Notes
-
-- Volumes are required if you want task data to persist between deploys. Without `AGENTBOARD_DB_PATH` pointing into `/data`, each deploy starts from a fresh SQLite file.
-- Additional env vars: `PORT` is auto-set by Railway; override `--bind/--port` only when running locally.
-
-## Roadmap
-
-Current status: **v0.2.0** — MVP plus enrichment, tunneling, and full agent CLI.
-
-Planned:
-- Homebrew distribution
-- Enhanced agent detection
-
-## Contributing
-
-```bash
-# Build from source
-git clone https://github.com/markx3/agentboard.git
-cd agentboard
-go build -o agentboard ./cmd/agentboard
-
-# Run tests
 go test ./...
 ```
 
-The project follows standard Go conventions with an `internal/` package layout. See the [Architecture](#architecture) section for an overview.
-
 ## Acknowledgements
 
-Inspired by [agtx](https://github.com/fynnfluegge/agtx) — a terminal-native AI agent orchestration tool.
-
-## License
-
-[MIT](LICENSE)
+This project is a derivative of the original Agentboard created by Mark Xu ([@markx3](https://github.com/markx3)).
