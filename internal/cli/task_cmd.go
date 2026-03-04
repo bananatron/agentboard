@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	boardpkg "github.com/markx3/agentboard/internal/board"
+	"github.com/markx3/agentboard/internal/config"
 	"github.com/markx3/agentboard/internal/db"
 )
 
@@ -232,7 +232,7 @@ func init() {
 }
 
 func openService() (boardpkg.Service, func(), error) {
-	dbPath := filepath.Join(".agentboard", "board.db")
+	dbPath := config.DatabasePath()
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening database: %w", err)

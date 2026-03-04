@@ -244,6 +244,8 @@ Running `agentboard init` creates:
   server.json    # ephemeral peer discovery (gitignored)
 ```
 
+> Need to relocate the database (e.g., Docker volume, Railway)? Set `AGENTBOARD_DB_PATH` to the desired absolute path before launching `agentboard` or `agentboard api`. If unset, it defaults to `.agentboard/board.db`.
+
 **Default `config.toml`:**
 
 ```toml
@@ -305,22 +307,37 @@ The TUI and CLI subcommands share the same binary and the same SQLite database. 
 
 ## Deployment (Railway)
 
-The repository includes a production-ready `Dockerfile` that compiles the Go binary in a builder stage and launches `agentboard api --bind 0.0.0.0`. Railway (via Nixpacks or a Docker deploy) will expose the service on the provided `$PORT`.
+The repository ships with a Dockerfile that builds the binary and runs `agentboard api --bind 0.0.0.0`. Railway’s runtime passes the port via `$PORT`, and the CLI respects that env var.
 
-1. Create a Railway project and link the repo (or use `railway init && railway link` locally).
-2. Generate a long random key and store it as an environment variable: `railway variables set AGENTBOARD_API_KEY=$(openssl rand -base64 32)`.
-3. Deploy with `railway up` (or through Railway MCP). The server listens on `$PORT` and refuses requests without the correct header.
-4. Verify:
+### Steps
 
-```bash
-# Missing key -> 401
-curl https://<railway-domain>/status
+1. Create or link a Railway project.
+2. **Persist storage:** attach a volume so the SQLite DB survives restarts:
+   ```bash
+   railway volume add --mount-path /data
+   ```
+   The service (or CLI) must point `AGENTBOARD_DB_PATH` to `/data/board.db` so SQLite writes into the volume.
+3. Set secrets:
+   ```bash
+   railway variables set AGENTBOARD_API_KEY=$(openssl rand -base64 32)
+   railway variables set AGENTBOARD_DB_PATH=/data/board.db
+   ```
+4. Deploy: `railway up` (or via Railway MCP).
+5. Verify:
 
-# Authorized request
-curl -H "X-API-Key: $AGENTBOARD_API_KEY" https://<railway-domain>/tasks
-```
+   ```bash
+   # Unauthenticated request -> 401
+   curl https://<railway-domain>/status
 
-Because containers are ephemeral, always set `AGENTBOARD_API_KEY` via Railway variables instead of relying on an on-disk `.env`.
+   # Authenticated
+   curl -H "X-API-Key: $AGENTBOARD_API_KEY" \
+        https://<railway-domain>/tasks
+   ```
+
+### Notes
+
+- Volumes are required if you want task data to persist between deploys. Without `AGENTBOARD_DB_PATH` pointing into `/data`, each deploy starts from a fresh SQLite file.
+- Additional env vars: `PORT` is auto-set by Railway; override `--bind/--port` only when running locally.
 
 ## Roadmap
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/markx3/agentboard/internal/auth"
 	boardpkg "github.com/markx3/agentboard/internal/board"
+	"github.com/markx3/agentboard/internal/config"
 	"github.com/markx3/agentboard/internal/db"
 	"github.com/markx3/agentboard/internal/peersync"
 	"github.com/markx3/agentboard/internal/tui"
@@ -40,7 +40,7 @@ func Execute() error {
 }
 
 func runBoard(cmd *cobra.Command, args []string) error {
-	dbPath := filepath.Join(".agentboard", "board.db")
+	dbPath := config.DatabasePath()
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
