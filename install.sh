@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="markx3/agentboard"
+REPO="bananatron/agentboard-api"
 BINARY="agentboard"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
@@ -52,19 +52,19 @@ get_version() {
         case "$RESPONSE" in
             *"rate limit"*|*"403"*)
                 echo "Error: GitHub API rate limited. Try again later or install from source:" >&2
-                echo "  go install github.com/markx3/agentboard/cmd/agentboard@latest" >&2
+                echo "  go install github.com/bananatron/agentboard-api/cmd/agentboard-api@latest" >&2
                 exit 1
                 ;;
             *"404"*|*"Not Found"*)
                 echo "Error: No releases found for ${REPO}." >&2
                 echo "Install from source instead:" >&2
-                echo "  go install github.com/markx3/agentboard/cmd/agentboard@latest" >&2
+                echo "  go install github.com/bananatron/agentboard-api/cmd/agentboard-api@latest" >&2
                 exit 1
                 ;;
             *)
                 echo "Error: Failed to fetch latest release (exit code $HTTP_CODE)." >&2
                 echo "Install from source instead:" >&2
-                echo "  go install github.com/markx3/agentboard/cmd/agentboard@latest" >&2
+                echo "  go install github.com/bananatron/agentboard-api/cmd/agentboard-api@latest" >&2
                 exit 1
                 ;;
         esac

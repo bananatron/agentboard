@@ -1,12 +1,12 @@
 # agentboard API
 
-A lightweight HTTP service for managing agent-friendly kanban boards. The runtime is designed for Railway, runs a single binary (`agentboard-api`), and persists state in SQLite.
+A lightweight HTTP service for managing agent-friendly kanban boards. The runtime is designed for Railway, runs a single binary (`agentboard-api`), and persists state in SQLite. Public docs live at [bananatron.github.io/agentboard-api](https://bananatron.github.io/agentboard-api/).
 
 ## Quick start
 
 ```bash
-git clone https://github.com/markx3/agentboard.git
-cd agentboard
+git clone https://github.com/bananatron/agentboard-api.git
+cd agentboard-api
 
 export AGENTBOARD_DB_PATH="$PWD/board.db"
 export AGENTBOARD_API_KEY="$(openssl rand -hex 16)"
