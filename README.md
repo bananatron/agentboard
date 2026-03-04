@@ -65,6 +65,32 @@ agentboard                         # auto-discovers via .agentboard/server.json
 agentboard --connect host:port     # manual connection
 ```
 
+## HTTP API
+
+Run `agentboard api` to expose the same CLI surface area over JSON. Every endpoint requires an API key that is generated on first run and persisted in `.env` as `AGENTBOARD_API_KEY` (the file is ignored by git). Keep this value private and pass it to the server with the `X-API-Key` header (or `Authorization: Bearer <key>`).
+
+```bash
+# Start a local API server
+agentboard api --bind 0.0.0.0 --port 8080
+
+# Load the key we just generated
+export $(grep AGENTBOARD_API_KEY .env)
+
+# Call endpoints (missing headers returns 401)
+curl -H "X-API-Key: $AGENTBOARD_API_KEY" http://127.0.0.1:8080/status
+curl -H "X-API-Key: $AGENTBOARD_API_KEY" -d '{"title":"New task"}' \
+     -H "Content-Type: application/json" http://127.0.0.1:8080/tasks
+```
+
+Available routes include:
+
+- `GET /status` — board summary, agents, enrichment queue
+- `GET/POST /tasks` and `GET/PATCH/DELETE /tasks/{id}`
+- `POST /tasks/{id}/claim`, `POST /tasks/{id}/comments`, `/dependencies`, `/suggestions`
+- `GET/POST /suggestions`, `POST /suggestions/{id}/accept|dismiss`
+
+All responses are intentionally terse (ID, status, and essential metadata) so other agents can consume them with minimal context.
+
 ## Features
 
 - **Collaborative Kanban board** in the terminal
@@ -274,6 +300,25 @@ The TUI and CLI subcommands share the same binary and the same SQLite database. 
 | [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) | Pure-Go SQLite driver |
 | [google/uuid](https://github.com/google/uuid) | UUID generation |
 | [ngrok/ngrok-go](https://github.com/ngrok/ngrok-go) | Ngrok tunnel integration |
+
+## Deployment (Railway)
+
+The repository includes a production-ready `Dockerfile` that compiles the Go binary in a builder stage and launches `agentboard api --bind 0.0.0.0`. Railway (via Nixpacks or a Docker deploy) will expose the service on the provided `$PORT`.
+
+1. Create a Railway project and link the repo (or use `railway init && railway link` locally).
+2. Generate a long random key and store it as an environment variable: `railway variables set AGENTBOARD_API_KEY=$(openssl rand -base64 32)`.
+3. Deploy with `railway up` (or through Railway MCP). The server listens on `$PORT` and refuses requests without the correct header.
+4. Verify:
+
+```bash
+# Missing key -> 401
+curl https://<railway-domain>/status
+
+# Authorized request
+curl -H "X-API-Key: $AGENTBOARD_API_KEY" https://<railway-domain>/tasks
+```
+
+Because containers are ephemeral, always set `AGENTBOARD_API_KEY` via Railway variables instead of relying on an on-disk `.env`.
 
 ## Roadmap
 
