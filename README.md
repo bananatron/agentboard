@@ -1,3 +1,5 @@
+![Deploy on Railway](https://railway.app/button.svg)
+
 ```
  ┌─────────────────────────────┐
  │        agentboard           │
